@@ -57,7 +57,7 @@ authRouter.post(
   validate(z.object({ refreshToken: z.string().min(10) })),
   asyncHandler(async (req, res) => {
     const payload = verifyToken(req.body.refreshToken);
-    if (payload.typ !== 'refresh') throw HttpError.unauthorized('Jeton de rafraîchissement attendu');
+    if (payload.type !== 'refresh') throw HttpError.unauthorized('Jeton de rafraîchissement attendu');
     res.json(await service.refreshSession(payload.sub));
   }),
 );
