@@ -26,14 +26,14 @@ export function signAccessToken(payload: AuthPayload): string {
 }
 
 export function signRefreshToken(payload: AuthPayload): string {
-  return jwt.sign({ ...payload, typ: 'refresh' }, env.jwtSecret, {
+  return jwt.sign({ ...payload, type: 'refresh' }, env.jwtSecret, {
     expiresIn: env.jwtRefreshExpiresIn,
   });
 }
 
-export function verifyToken(token: string): AuthPayload & { typ?: string } {
+export function verifyToken(token: string): AuthPayload & { type?: string } {
   try {
-    return jwt.verify(token, env.jwtSecret) as AuthPayload & { typ?: string };
+    return jwt.verify(token, env.jwtSecret) as AuthPayload & { type?: string };
   } catch {
     throw HttpError.unauthorized('Session expirée, veuillez vous reconnecter');
   }
@@ -45,11 +45,18 @@ export function authenticate(req: Request, _res: Response, next: NextFunction): 
   if (!header?.startsWith('Bearer ')) {
     return next(HttpError.unauthorized());
   }
+
   const payload = verifyToken(header.slice(7));
-  if (payload.typ === 'refresh') {
+  if (payload.type === 'refresh') {
     return next(HttpError.unauthorized('Jeton de rafraîchissement non utilisable ici'));
   }
-  req.auth = { sub: payload.sub, username: payload.username, fullName: payload.fullName, role: payload.role };
+
+  req.auth = {
+    sub: payload.sub,
+    username: payload.username,
+    fullName: payload.fullName,
+    role: payload.role,
+  };
   next();
 }
 
