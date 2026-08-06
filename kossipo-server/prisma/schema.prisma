@@ -1,0 +1,372 @@
+// KOSSIPO RESTAURANT PRO — Schéma de données
+// PostgreSQL + Prisma ORM
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────── Utilisateurs & sécurité
+
+enum Role {
+  ADMIN
+  MANAGER
+  CASHIER
+  KITCHEN
+  BAR
+}
+
+model User {
+  id           String   @id @default(uuid())
+  fullName     String
+  username     String   @unique
+  role         Role
+  passwordHash String?
+  pinHash      String?
+  active       Boolean  @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  orders        Order[]
+  payments      Payment[]
+  cashSessions  CashSession[]
+  cashMovements CashMovement[]
+  stockMoves    StockMovement[]
+  auditLogs     AuditLog[]
+
+  @@index([role, active])
+}
+
+model AuditLog {
+  id       String   @id @default(uuid())
+  userId   String?
+  user     User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action   String
+  entity   String
+  entityId String?
+  details  Json?
+  ip       String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([entity, entityId])
+}
+
+// ─────────────────────────────── Salle
+
+enum TableStatus {
+  LIBRE
+  OCCUPEE
+  COMMANDE_ENVOYEE
+  EN_PREPARATION
+  SERVIE
+  PAYEE
+}
+
+model Zone {
+  id            String  @id @default(uuid())
+  code          String  @unique // TERRASSE | VIP1 | VIP2
+  name          String
+  freeDrinkPrice Boolean @default(false) // boissons en libre-service (prix saisi à la commande)
+  sortOrder     Int     @default(0)
+  color         String  @default("#E4A11B")
+
+  tables   RestaurantTable[]
+  prices   ProductPrice[]
+  orders   Order[]
+}
+
+model RestaurantTable {
+  id       String      @id @default(uuid())
+  zoneId   String
+  zone     Zone        @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+  number   Int
+  label    String
+  seats    Int         @default(4)
+  posX     Int         @default(0)
+  posY     Int         @default(0)
+  status   TableStatus @default(LIBRE)
+  active   Boolean     @default(true)
+
+  orders Order[]
+
+  @@unique([zoneId, number])
+  @@index([status])
+}
+
+// ─────────────────────────────── Carte
+
+enum Destination {
+  KITCHEN
+  BAR
+  NONE
+}
+
+model Category {
+  id          String      @id @default(uuid())
+  name        String      @unique
+  destination Destination @default(KITCHEN)
+  sortOrder   Int         @default(0)
+  color       String      @default("#2F9E8F")
+
+  products Product[]
+}
+
+model Product {
+  id         String   @id @default(uuid())
+  name       String
+  categoryId String
+  category   Category @relation(fields: [categoryId], references: [id])
+  sku        String?  @unique
+  active     Boolean  @default(true)
+  sortOrder  Int      @default(0)
+
+  prices     ProductPrice[]
+  recipe     RecipeLine[]
+  orderItems OrderItem[]
+
+  @@index([categoryId, active])
+}
+
+// Prix par zone : la Terrasse et les VIP n'ont pas les mêmes tarifs.
+// freePrice = true  ->  prix saisi librement par le caissier (boissons VIP libre-service).
+model ProductPrice {
+  id        String  @id @default(uuid())
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  zoneId    String
+  zone      Zone    @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+  price     Int     @default(0) // FCFA, entier (pas de centimes)
+  available Boolean @default(true)
+  freePrice Boolean @default(false)
+
+  @@unique([productId, zoneId])
+}
+
+// ─────────────────────────────── Commandes
+
+enum OrderStatus {
+  OUVERTE
+  ENVOYEE
+  EN_PREPARATION
+  SERVIE
+  PAYEE
+  ANNULEE
+}
+
+enum ItemStatus {
+  NOUVEAU
+  ENVOYE
+  EN_PREPARATION
+  PRET
+  SERVI
+  ANNULE
+}
+
+model Order {
+  id        String      @id @default(uuid())
+  number    String      @unique
+  tableId   String?
+  table     RestaurantTable? @relation(fields: [tableId], references: [id])
+  zoneId    String
+  zone      Zone        @relation(fields: [zoneId], references: [id])
+  userId    String
+  user      User        @relation(fields: [userId], references: [id])
+  status    OrderStatus @default(OUVERTE)
+  guests    Int         @default(1)
+  note      String?
+  discount  Int         @default(0)
+  total     Int         @default(0)
+  paidTotal Int         @default(0)
+  cashSessionId String?
+  cashSession   CashSession? @relation(fields: [cashSessionId], references: [id])
+  mergedIntoId  String?
+  openedAt  DateTime    @default(now())
+  sentAt    DateTime?
+  closedAt  DateTime?
+  cancelReason String?
+
+  items    OrderItem[]
+  payments Payment[]
+  stockMoves StockMovement[]
+
+  @@index([status, openedAt])
+  @@index([openedAt])
+}
+
+model OrderItem {
+  id        String     @id @default(uuid())
+  orderId   String
+  order     Order      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product    @relation(fields: [productId], references: [id])
+  name      String     // instantané du nom au moment de la vente
+  quantity  Int
+  unitPrice Int
+  total     Int
+  status    ItemStatus  @default(NOUVEAU)
+  destination Destination @default(KITCHEN)
+  note      String?
+  sentAt    DateTime?
+  createdAt DateTime   @default(now())
+
+  @@index([orderId])
+  @@index([status, destination])
+}
+
+// ─────────────────────────────── Encaissement
+
+enum PaymentMethod {
+  ESPECES
+  MOBILE_MONEY
+  CARTE
+}
+
+model Payment {
+  id        String        @id @default(uuid())
+  orderId   String
+  order     Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  method    PaymentMethod
+  amount    Int
+  received  Int           @default(0)
+  change    Int           @default(0)
+  reference String?
+  userId    String
+  user      User          @relation(fields: [userId], references: [id])
+  cashSessionId String?
+  cashSession   CashSession? @relation(fields: [cashSessionId], references: [id])
+  createdAt DateTime      @default(now())
+
+  @@index([createdAt])
+}
+
+enum CashSessionStatus {
+  OUVERTE
+  FERMEE
+}
+
+model CashSession {
+  id           String            @id @default(uuid())
+  userId       String
+  user         User              @relation(fields: [userId], references: [id])
+  openingFloat Int               @default(0)
+  countedCash  Int?
+  expectedCash Int               @default(0)
+  difference   Int               @default(0)
+  status       CashSessionStatus @default(OUVERTE)
+  openedAt     DateTime          @default(now())
+  closedAt     DateTime?
+  note         String?
+
+  payments  Payment[]
+  orders    Order[]
+  movements CashMovement[]
+
+  @@index([status, openedAt])
+}
+
+enum CashMovementType {
+  ENTREE
+  SORTIE
+}
+
+model CashMovement {
+  id        String           @id @default(uuid())
+  sessionId String
+  session   CashSession      @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  type      CashMovementType
+  amount    Int
+  reason    String
+  userId    String
+  user      User             @relation(fields: [userId], references: [id])
+  createdAt DateTime         @default(now())
+}
+
+// ─────────────────────────────── Stock
+
+model StockCategory {
+  id        String  @id @default(uuid())
+  name      String  @unique
+  sortOrder Int     @default(0)
+
+  items StockItem[]
+}
+
+model StockItem {
+  id          String        @id @default(uuid())
+  name        String
+  categoryId  String
+  category    StockCategory @relation(fields: [categoryId], references: [id])
+  unit        String        @default("u")
+  quantity    Float         @default(0)
+  minQuantity Float         @default(0)
+  unitCost    Int           @default(0)
+  active      Boolean       @default(true)
+  updatedAt   DateTime      @updatedAt
+
+  movements StockMovement[]
+  recipes   RecipeLine[]
+
+  @@index([categoryId, active])
+}
+
+enum StockMovementType {
+  ENTREE
+  SORTIE
+  INVENTAIRE
+  PERTE
+  VENTE
+}
+
+model StockMovement {
+  id        String            @id @default(uuid())
+  itemId    String
+  item      StockItem         @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  type      StockMovementType
+  quantity  Float
+  before    Float             @default(0)
+  after     Float             @default(0)
+  unitCost  Int               @default(0)
+  reason    String?
+  userId    String?
+  user      User?             @relation(fields: [userId], references: [id], onDelete: SetNull)
+  orderId   String?
+  order     Order?            @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  createdAt DateTime          @default(now())
+
+  @@index([itemId, createdAt])
+  @@index([createdAt])
+}
+
+// Fiche technique : consommation automatique du stock à la vente
+model RecipeLine {
+  id          String    @id @default(uuid())
+  productId   String
+  product     Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  stockItemId String
+  stockItem   StockItem @relation(fields: [stockItemId], references: [id], onDelete: Cascade)
+  quantity    Float
+
+  @@unique([productId, stockItemId])
+}
+
+// ─────────────────────────────── Divers
+
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+model Backup {
+  id        String   @id @default(uuid())
+  filename  String
+  sizeBytes Int      @default(0)
+  kind      String   @default("AUTO")
+  createdAt DateTime @default(now())
+}
